@@ -48,7 +48,9 @@ app.get("/productos/:id", async (req, res) => {
     res.status(200).send(producto[0]);
   } catch (err) {
     console.error(err);
-    res.status(500).send({ error: `Error al obtener el producto, error: ${err}` });
+    res
+      .status(500)
+      .send({ error: `Error al obtener el producto, error: ${err}` });
   }
 });
 
@@ -131,7 +133,8 @@ app.put("/productos/:id", async (req, res) => {
   };
 
   try {
-    const verifExistenciaProducto = await sql`SELECT * FROM productos WHERE id=${id}`;
+    const verifExistenciaProducto =
+      await sql`SELECT * FROM productos WHERE id=${id}`;
     if (verifExistenciaProducto.length === 0) {
       res.status(404).send({ error: "Producto no encontrado" });
       return;
@@ -232,7 +235,6 @@ app.get("/clientes/:id", async (req, res) => {
 // (sql.begin) para que la inserción de pedido + items + descuento
 // de stock sea todo o nada.
 
-
 app.post("/pedidos", async (req, res) => {
   // 1. Validar el body
   try {
@@ -265,19 +267,28 @@ app.post("/pedidos", async (req, res) => {
 
   // 3. Verificar cada producto y calcular el total
   let total = 0;
-  const itemsConPrecio: { producto_id: number; cantidad: number; precio_unitario: number }[] = [];
+  const itemsConPrecio: {
+    producto_id: number;
+    cantidad: number;
+    precio_unitario: number;
+  }[] = [];
 
   try {
     for (const item of items) {
-      const producto = await sql`SELECT nombre, precio, stock FROM productos WHERE id = ${item.producto_id}`;
+      const producto =
+        await sql`SELECT nombre, precio, stock FROM productos WHERE id = ${item.producto_id}`;
 
       if (producto.length === 0) {
-        res.status(404).send({ error: `Producto ${item.producto_id} no encontrado` });
+        res
+          .status(404)
+          .send({ error: `Producto ${item.producto_id} no encontrado` });
         return;
       }
 
       if (producto[0]?.stock < item.cantidad) {
-        res.status(400).send({ error: `Stock insuficiente para el producto ${item.producto_id}` });
+        res.status(400).send({
+          error: `Stock insuficiente para el producto ${item.producto_id}`,
+        });
         return;
       }
 
@@ -299,6 +310,10 @@ app.post("/pedidos", async (req, res) => {
       VALUES (${cliente_id}, 'pendiente', ${total})
       RETURNING *
     `;
+    if (!pedidoNuevo) {
+      res.status(500).send({ error: "Error al crear el pedido" });
+      return;
+    }
   } catch (err) {
     console.log(err);
     res.status(500).send({ error: "Error al insertar el pedido" });
@@ -323,11 +338,9 @@ app.post("/pedidos", async (req, res) => {
   res.status(201).send(pedidoNuevo);
 });
 
-// TODO — todavía no hechas:
-// GET    /pedidos/:id              -> detalle del pedido con sus items
+// TODO:
 // PATCH  /pedidos/:id/estado       -> cambiar estado (validar transiciones)
 // GET    /clientes/:id/pedidos     -> listar pedidos de un cliente
-
 
 // Ruta GET /pedidos/:id
 app.get("/pedidos/:id", async (req, res) => {
@@ -338,44 +351,44 @@ app.get("/pedidos/:id", async (req, res) => {
     await valZod.validarId.parseAsync({ id });
   } catch (err) {
     console.error(err);
-    res.status(400).send({ error: "Datos invalidos"});
+    res.status(400).send({ error: "Datos invalidos" });
     return;
   }
 
   // Realizar consulta de busqueda
   try {
     const [pedido] = await sql`SELECT * FROM pedidos WHERE id = ${id}`;
-    if (!pedido){
-      res.status(404).send({error: "Pedido no encontrado"})
+    if (!pedido) {
+      res.status(404).send({ error: "Pedido no encontrado" });
       return;
     }
-// Buscar los items del pedido con el nombre del producto de paso
+    // Buscar los items del pedido con el nombre del producto de paso
     const items = await sql`
           SELECT pi.producto_id, p.nombre, pi.cantidad, pi.precio_unitario
           FROM pedido_items pi
           JOIN productos p ON p.id = pi.producto_id
           WHERE pi.pedido_id = ${id}
         `;
-    res.status(200).send( { ...pedido, items: items } );
+    res.status(200).send({ ...pedido, items: items });
   } catch (err) {
     console.error(err);
-    res.status(500).send({error: "Error al obtener el pedido"});
+    res.status(500).send({ error: "Error al obtener el pedido" });
     return;
   }
-})
-  
-  // Ruta PATCH a /pedidos/:id/estado para cambiar el estado de un pedido, codigo 200/400/404
-  app.patch('/pedidos/:id/estado', async (req, res) => {
-    //const {  }
-    // Validar body de la request
-    try {
-      await valZod.actualizarEstadoPedidoSchema.parseAsync(req.body);
-    } catch (err) {
-      console.error(err);
-      res.status(400).send({error: "Datos invalidos"})
-      return;
-    }
-  })
+});
+
+// Ruta PATCH a /pedidos/:id/estado para cambiar el estado de un pedido, codigo 200/400/404
+app.patch("/pedidos/:id/estado", async (req, res) => {
+  //const {  }
+  // Validar body de la request
+  try {
+    await valZod.actualizarEstadoPedidoSchema.parseAsync(req.body);
+  } catch (err) {
+    console.error(err);
+    res.status(400).send({ error: "Datos invalidos" });
+    return;
+  }
+});
 
 app.listen({ port: 3000 }, (err, address) => {
   console.log(`Server is now listening on ${address}`);
