@@ -48,7 +48,9 @@ const itemPedidoSchema = z.object({
 // ============================================
 export const crearPedidoSchema = z.object({
   cliente_id: z.coerce.number().int().positive(),
-  items: z.array(itemPedidoSchema).min(1, "El pedido debe tener al menos un item"),
+  items: z
+    .array(itemPedidoSchema)
+    .min(1, "El pedido debe tener al menos un item"),
 });
 
 // Item ya calculado, listo para insertar en pedido_items
@@ -64,3 +66,5 @@ export const crearItemSchema = z.object({
 export const actualizarEstadoPedidoSchema = z.object({
   estado: z.enum(["pendiente", "confirmado", "entregado", "cancelado"]),
 });
+
+// Validacion para

@@ -20,7 +20,9 @@ app.get("/", (req, res) => {
 
 app.get("/productos", async (req, res) => {
   try {
-    const productos = await sql`SELECT * FROM productos`;
+    const productos = await sql`
+      SELECT *
+      FROM productos`;
     res.status(200).send(productos);
   } catch (err) {
     console.error(err);
@@ -40,7 +42,10 @@ app.get("/productos/:id", async (req, res) => {
   }
 
   try {
-    const producto = await sql`SELECT * FROM productos WHERE id=${id}`;
+    const producto = await sql`
+      SELECT *
+      FROM productos
+      WHERE id=${id}`;
     if (producto.length === 0) {
       res.status(404).send({ error: "Producto no encontrado" });
       return;
@@ -195,7 +200,9 @@ app.post("/clientes", async (req, res) => {
 
 app.get("/clientes", async (req, res) => {
   try {
-    const clientes = await sql`SELECT * FROM clientes`;
+    const clientes = await sql`
+      SELECT *
+      FROM clientes`;
     res.status(200).send(clientes);
   } catch (err) {
     console.error(err);
@@ -215,7 +222,10 @@ app.get("/clientes/:id", async (req, res) => {
   }
 
   try {
-    const cliente = await sql`SELECT * FROM clientes WHERE id=${id}`;
+    const cliente = await sql`
+      SELECT *
+      FROM clientes
+      WHERE id=${id}`;
     if (cliente.length === 0) {
       res.status(404).send({ error: "Cliente no encontrado" });
       return;
@@ -252,8 +262,12 @@ app.post("/pedidos", async (req, res) => {
 
   // 2. Verificar existencia del cliente
   try {
-    const clienteExiste = await sql`SELECT EXISTS (
-      SELECT 1 FROM clientes WHERE id = ${cliente_id}
+    const clienteExiste = await sql`
+    SELECT EXISTS
+    (
+      SELECT 1
+      FROM clientes
+      WHERE id = ${cliente_id}
     ) AS existe;`;
     if (clienteExiste[0]?.existe === false) {
       res.status(404).send({ error: "Cliente no encontrado" });
@@ -307,7 +321,8 @@ app.post("/pedidos", async (req, res) => {
   try {
     [pedidoNuevo] = await sql`
       INSERT INTO pedidos (cliente_id, estado, total)
-      VALUES (${cliente_id}, 'pendiente', ${total})
+      VALUES
+      (${cliente_id}, 'pendiente', ${total})
       RETURNING *
     `;
     if (!pedidoNuevo) {
@@ -324,8 +339,10 @@ app.post("/pedidos", async (req, res) => {
   try {
     for (const item of itemsConPrecio) {
       await sql`
-        INSERT INTO pedido_items (pedido_id, producto_id, cantidad, precio_unitario)
-        VALUES (${pedidoNuevo.id}, ${item.producto_id}, ${item.cantidad}, ${item.precio_unitario})
+        INSERT INTO pedido_items
+        (pedido_id, producto_id, cantidad, precio_unitario)
+        VALUES
+        (${pedidoNuevo.id}, ${item.producto_id}, ${item.cantidad}, ${item.precio_unitario})
       `;
       await sql`UPDATE productos SET stock = stock - ${item.cantidad} WHERE id = ${item.producto_id}`;
     }
@@ -337,10 +354,6 @@ app.post("/pedidos", async (req, res) => {
 
   res.status(201).send(pedidoNuevo);
 });
-
-// TODO:
-// PATCH  /pedidos/:id/estado       -> cambiar estado (validar transiciones)
-// GET    /clientes/:id/pedidos     -> listar pedidos de un cliente
 
 // Ruta GET /pedidos/:id
 app.get("/pedidos/:id", async (req, res) => {
@@ -357,7 +370,11 @@ app.get("/pedidos/:id", async (req, res) => {
 
   // Realizar consulta de busqueda
   try {
-    const [pedido] = await sql`SELECT * FROM pedidos WHERE id = ${id}`;
+    const [pedido] = await sql`
+      SELECT *
+      FROM pedidos
+      WHERE id = ${id}
+    `;
     if (!pedido) {
       res.status(404).send({ error: "Pedido no encontrado" });
       return;
@@ -378,17 +395,107 @@ app.get("/pedidos/:id", async (req, res) => {
 });
 
 // Ruta PATCH a /pedidos/:id/estado para cambiar el estado de un pedido, codigo 200/400/404
+const transicionesValidas: Record<string, string[]> = {
+  pendiente: ["confirmado", "cancelado"],
+  confirmado: ["entregado", "cancelado"],
+  entregado: [],
+  cancelado: [],
+};
+
 app.patch("/pedidos/:id/estado", async (req, res) => {
-  //const {  }
-  // Validar body de la request
+  const { id } = req.params as { id: string };
+  const { estado } = req.body as { estado: string };
+
   try {
+    await valZod.validarId.parseAsync(req.params);
     await valZod.actualizarEstadoPedidoSchema.parseAsync(req.body);
   } catch (err) {
     console.error(err);
     res.status(400).send({ error: "Datos invalidos" });
     return;
   }
+
+  let pedido;
+  try {
+    [pedido] = await sql`SELECT * FROM pedidos WHERE id = ${id}`;
+    if (!pedido) {
+      res.status(404).send({ error: "El pedido no se encuentra registrado" });
+      return;
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ error: "Error al buscar el pedido" });
+    return;
+  }
+
+  const permitidos = transicionesValidas[pedido.estado];
+  if (!permitidos.includes(estado)) {
+    res.status(400).send({
+      error: `No se puede pasar de '${pedido.estado}' a '${estado}'`,
+    });
+    return;
+  }
+
+  try {
+    const [pedidoActualizado] = await sql`
+      UPDATE pedidos SET estado = ${estado} WHERE id = ${id}
+      RETURNING id, estado, created_at
+    `;
+    res.status(200).send(pedidoActualizado);
+  } catch (err) {
+    console.error(err);
+    res
+      .status(500)
+      .send({ error: "No se pudo actualizar el estado del pedido." });
+  }
 });
+
+// Ruta GET a /clientes/:id/pedidos, listar pedidos de un cliente CODIGO 200 / 404
+app.get("/clientes/:id/pedidos", async (req, res) => {
+  const { id } = req.params as { id: string };
+  // Validar id
+  try {
+    await valZod.validarId.parseAsync(req.params);
+  } catch (err) {
+    console.error(err);
+    res.status(400).send({ error: "Datos invalidos" });
+    return;
+  }
+  // Verificar existencia del cliente
+  try {
+    const cliente = await sql`SELECT * FROM clientes WHERE id = ${id}`;
+    if (cliente.length === 0) {
+      res.status(404).send({ error: "No se encontro el cliente." });
+      return;
+    }
+    try {
+      const pedidos =
+        await sql`SELECT id, estado FROM pedidos WHERE cliente_id = ${id};`;
+      if (pedidos.length === 0) {
+        res
+          .status(200)
+          .send({ message: "No se encontraron pedidos para el cliente" });
+        return;
+      }
+      res.status(200).send(pedidos);
+    } catch (err) {
+      console.error(err);
+      res
+        .status(500)
+        .send({ error: "Error al obtener los pedidos del cliente" });
+      return;
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ error: "Error al obtener el cliente" });
+    return;
+  }
+  // Verificar si tiene pedidos
+});
+
+// Ruta POST /auth/registro - Crear usuario (hashear password) - No protegida
+// Ruta POST /auth/login - Validar credenciales y devolver JWT - No protegida
+// Ruta GET /auth/me - Devolver datos del usuario logueado - Protegida
 
 app.listen({ port: 3000 }, (err, address) => {
   console.log(`Server is now listening on ${address}`);
