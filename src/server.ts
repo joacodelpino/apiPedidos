@@ -1,7 +1,14 @@
 import Fastify from "fastify";
+import fastifyJwt from "@fastify/jwt";
+import type { FastifyRequest, FastifyReply } from "fastify";
 import { sql } from "./db.ts";
 import * as valZod from "./schemas/producto.ts";
+import dotenv from "dotenv";
+import bcrypt from "bcryptjs";
 
+dotenv.config();
+
+// Inicializar cliente Fastify (instanciar)
 const app = Fastify({
   logger: {
     transport: {
@@ -12,6 +19,31 @@ const app = Fastify({
       },
     },
   },
+});
+
+// plugin JWT
+const fastifySecret = process.env.FASTIFY_SECRET_JWT || "dev-secret";
+app.register(fastifyJwt, {
+  secret: fastifySecret,
+});
+
+// Necesario para que typescript reconozca el decorador
+declare module "fastify" {
+  interface FastifyInstance {
+    authenticate: (
+      request: FastifyRequest,
+      reply: FastifyReply,
+    ) => Promise<void>;
+  }
+}
+
+// Decorador para autenticacion (hook)
+app.decorate("authenticate", async function (req: any, res: any) {
+  try {
+    await req.jwtVerify();
+  } catch (err) {
+    res.status(401).send({ error: "Token invalido" });
+  }
 });
 
 app.get("/", (req, res) => {
@@ -53,13 +85,12 @@ app.get("/productos/:id", async (req, res) => {
     res.status(200).send(producto[0]);
   } catch (err) {
     console.error(err);
-    res
-      .status(500)
-      .send({ error: `Error al obtener el producto, error: ${err}` });
+    res.status(500).send({ error: "Error al obtener el producto" });
   }
 });
 
-app.post("/productos", async (req, res) => {
+// Ruta POST protegida (requiere token)
+app.post("/productos", { onRequest: [app.authenticate] }, async (req, res) => {
   try {
     await valZod.crearProductoSchema.parseAsync(req.body);
   } catch (err) {
@@ -87,65 +118,75 @@ app.post("/productos", async (req, res) => {
   }
 });
 
-app.delete("/productos/:id", async (req, res) => {
-  const { id } = req.params as { id: string };
+// Ruta DELETE protegida (requiere token)
+app.delete(
+  "/productos/:id",
+  { onRequest: [app.authenticate] },
+  async (req, res) => {
+    const { id } = req.params as { id: string };
 
-  try {
-    await valZod.validarId.parseAsync({ id });
-  } catch (err) {
-    console.error(err);
-    res.status(400).send({ error: "Datos invalidos" });
-    return;
-  }
-
-  try {
-    const productoAEliminar = await sql`SELECT * FROM productos WHERE id=${id}`;
-    if (productoAEliminar.length === 0) {
-      res.status(404).send({ error: "Producto no encontrado" });
-      return;
-    }
-    await sql`DELETE FROM productos WHERE id=${id}`;
-    res.status(204).send();
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ error: "Error al eliminar el producto" });
-  }
-});
-
-app.put("/productos/:id", async (req, res) => {
-  const { id } = req.params as { id: string };
-
-  try {
-    await valZod.validarId.parseAsync({ id });
-  } catch (err) {
-    console.error(err);
-    res.status(400).send({ error: "Datos invalidos" });
-    return;
-  }
-
-  try {
-    await valZod.actualizarProductoSchema.parseAsync(req.body);
-  } catch (err) {
-    console.error(err);
-    res.status(400).send({ error: "Datos invalidos" });
-    return;
-  }
-
-  const { nombre, precio, stock } = req.body as {
-    nombre?: string;
-    precio?: number;
-    stock?: number;
-  };
-
-  try {
-    const verifExistenciaProducto =
-      await sql`SELECT * FROM productos WHERE id=${id}`;
-    if (verifExistenciaProducto.length === 0) {
-      res.status(404).send({ error: "Producto no encontrado" });
+    try {
+      await valZod.validarId.parseAsync({ id });
+    } catch (err) {
+      console.error(err);
+      res.status(400).send({ error: "Datos invalidos" });
       return;
     }
 
-    const [productoActualizado] = await sql`
+    try {
+      const productoAEliminar =
+        await sql`SELECT * FROM productos WHERE id=${id}`;
+      if (productoAEliminar.length === 0) {
+        res.status(404).send({ error: "Producto no encontrado" });
+        return;
+      }
+      await sql`DELETE FROM productos WHERE id=${id}`;
+      res.status(204).send();
+    } catch (err) {
+      console.error(err);
+      res.status(500).send({ error: "Error al eliminar el producto" });
+    }
+  },
+);
+
+// Ruta PUT protegida (requiere token)
+app.put(
+  "/productos/:id",
+  { onRequest: [app.authenticate] },
+  async (req, res) => {
+    const { id } = req.params as { id: string };
+
+    try {
+      await valZod.validarId.parseAsync({ id });
+    } catch (err) {
+      console.error(err);
+      res.status(400).send({ error: "Datos invalidos" });
+      return;
+    }
+
+    try {
+      await valZod.actualizarProductoSchema.parseAsync(req.body);
+    } catch (err) {
+      console.error(err);
+      res.status(400).send({ error: "Datos invalidos" });
+      return;
+    }
+
+    const { nombre, precio, stock } = req.body as {
+      nombre?: string;
+      precio?: number;
+      stock?: number;
+    };
+
+    try {
+      const verifExistenciaProducto =
+        await sql`SELECT * FROM productos WHERE id=${id}`;
+      if (verifExistenciaProducto.length === 0) {
+        res.status(404).send({ error: "Producto no encontrado" });
+        return;
+      }
+
+      const [productoActualizado] = await sql`
       UPDATE productos
       SET
         nombre = COALESCE(${nombre ?? null}, nombre),
@@ -154,18 +195,20 @@ app.put("/productos/:id", async (req, res) => {
       WHERE id = ${id}
       RETURNING *
     `;
-    res.status(200).send(productoActualizado);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ error: "Error al actualizar el producto" });
-  }
-});
+      res.status(200).send(productoActualizado);
+    } catch (err) {
+      console.error(err);
+      res.status(500).send({ error: "Error al actualizar el producto" });
+    }
+  },
+);
 
 // ============================================
 // CLIENTES
 // ============================================
 
-app.post("/clientes", async (req, res) => {
+// Ruta POST protegida (requiere token)
+app.post("/clientes", { onRequest: [app.authenticate] }, async (req, res) => {
   try {
     await valZod.crearClienteSchema.parseAsync(req.body);
   } catch (err) {
@@ -245,7 +288,8 @@ app.get("/clientes/:id", async (req, res) => {
 // (sql.begin) para que la inserción de pedido + items + descuento
 // de stock sea todo o nada.
 
-app.post("/pedidos", async (req, res) => {
+// Ruta POST protegida (requiere token)
+app.post("/pedidos", { onRequest: [app.authenticate] }, async (req, res) => {
   // 1. Validar el body
   try {
     await valZod.crearPedidoSchema.parseAsync(req.body);
@@ -299,14 +343,14 @@ app.post("/pedidos", async (req, res) => {
         return;
       }
 
-      if (producto[0]?.stock < item.cantidad) {
+      if (producto[0].stock < item.cantidad) {
         res.status(400).send({
           error: `Stock insuficiente para el producto ${item.producto_id}`,
         });
         return;
       }
 
-      const precio = producto[0]?.precio;
+      const precio = producto[0].precio;
       total += precio * item.cantidad;
       itemsConPrecio.push({ ...item, precio_unitario: precio });
     }
@@ -402,53 +446,58 @@ const transicionesValidas: Record<string, string[]> = {
   cancelado: [],
 };
 
-app.patch("/pedidos/:id/estado", async (req, res) => {
-  const { id } = req.params as { id: string };
-  const { estado } = req.body as { estado: string };
+// Ruta PATCH protegida (requiere token)
+app.patch(
+  "/pedidos/:id/estado",
+  { onRequest: [app.authenticate] },
+  async (req, res) => {
+    const { id } = req.params as { id: string };
+    const { estado } = req.body as { estado: string };
 
-  try {
-    await valZod.validarId.parseAsync(req.params);
-    await valZod.actualizarEstadoPedidoSchema.parseAsync(req.body);
-  } catch (err) {
-    console.error(err);
-    res.status(400).send({ error: "Datos invalidos" });
-    return;
-  }
-
-  let pedido;
-  try {
-    [pedido] = await sql`SELECT * FROM pedidos WHERE id = ${id}`;
-    if (!pedido) {
-      res.status(404).send({ error: "El pedido no se encuentra registrado" });
+    try {
+      await valZod.validarId.parseAsync(req.params);
+      await valZod.actualizarEstadoPedidoSchema.parseAsync(req.body);
+    } catch (err) {
+      console.error(err);
+      res.status(400).send({ error: "Datos invalidos" });
       return;
     }
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ error: "Error al buscar el pedido" });
-    return;
-  }
 
-  const permitidos = transicionesValidas[pedido.estado];
-  if (!permitidos.includes(estado)) {
-    res.status(400).send({
-      error: `No se puede pasar de '${pedido.estado}' a '${estado}'`,
-    });
-    return;
-  }
+    let pedido;
+    try {
+      [pedido] = await sql`SELECT * FROM pedidos WHERE id = ${id}`;
+      if (!pedido) {
+        res.status(404).send({ error: "El pedido no se encuentra registrado" });
+        return;
+      }
+    } catch (err) {
+      console.error(err);
+      res.status(500).send({ error: "Error al buscar el pedido" });
+      return;
+    }
 
-  try {
-    const [pedidoActualizado] = await sql`
+    const permitidos = transicionesValidas[pedido.estado];
+    if (!permitidos.includes(estado)) {
+      res.status(400).send({
+        error: `No se puede pasar de '${pedido.estado}' a '${estado}'`,
+      });
+      return;
+    }
+
+    try {
+      const [pedidoActualizado] = await sql`
       UPDATE pedidos SET estado = ${estado} WHERE id = ${id}
       RETURNING id, estado, created_at
     `;
-    res.status(200).send(pedidoActualizado);
-  } catch (err) {
-    console.error(err);
-    res
-      .status(500)
-      .send({ error: "No se pudo actualizar el estado del pedido." });
-  }
-});
+      res.status(200).send(pedidoActualizado);
+    } catch (err) {
+      console.error(err);
+      res
+        .status(500)
+        .send({ error: "No se pudo actualizar el estado del pedido." });
+    }
+  },
+);
 
 // Ruta GET a /clientes/:id/pedidos, listar pedidos de un cliente CODIGO 200 / 404
 app.get("/clientes/:id/pedidos", async (req, res) => {
@@ -471,12 +520,6 @@ app.get("/clientes/:id/pedidos", async (req, res) => {
     try {
       const pedidos =
         await sql`SELECT id, estado FROM pedidos WHERE cliente_id = ${id};`;
-      if (pedidos.length === 0) {
-        res
-          .status(200)
-          .send({ message: "No se encontraron pedidos para el cliente" });
-        return;
-      }
       res.status(200).send(pedidos);
     } catch (err) {
       console.error(err);
@@ -490,12 +533,111 @@ app.get("/clientes/:id/pedidos", async (req, res) => {
     res.status(500).send({ error: "Error al obtener el cliente" });
     return;
   }
-  // Verificar si tiene pedidos
 });
 
 // Ruta POST /auth/registro - Crear usuario (hashear password) - No protegida
+
+app.post("/auth/registro", async (req, res) => {
+  const { email, password } = req.body as { email: string; password: string };
+
+  // Validar email y contraseña
+  try {
+    await valZod.signUpSchema.parseAsync(req.body);
+  } catch (err) {
+    console.error(err);
+    res.status(400).send({ error: "Datos invalidos" });
+    return;
+  }
+
+  // Validar si el usuario ya existe
+  try {
+    const usuario = await sql`SELECT * FROM usuarios WHERE email = ${email}`;
+    if (usuario.length > 0) {
+      res.status(409).send({ error: "Usuario existente" });
+      return;
+    }
+
+    // Hashear password con fastify
+    const hashPassword = await bcrypt.hash(password, 10);
+
+    // Insertar password y email en la db
+    try {
+      const [usuario] = await sql`INSERT INTO usuarios (email, password_hash)
+        VALUES (${email}, ${hashPassword})
+        RETURNING id, email, created_at`;
+      res.status(201).send(usuario);
+      return;
+    } catch (err) {
+      console.error(err);
+      res.status(500).send({ error: "Error al insertar el usuario" });
+      return;
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ error: "Error al verificar el usuario" });
+    return;
+  }
+});
+
 // Ruta POST /auth/login - Validar credenciales y devolver JWT - No protegida
+app.post("/auth/login", async (req, res) => {
+  const { email, password } = req.body as { email: string; password: string };
+
+  // Validar body (email y password)
+  try {
+    await valZod.loginSchema.parseAsync(req.body);
+  } catch (err) {
+    console.error(err);
+    res.status(400).send({ error: "Datos invalidos" });
+    return;
+  }
+
+  // Verificar que el usuario esta registrado
+  try {
+    const [usuario] = await sql`SELECT * FROM usuarios WHERE email = ${email}`;
+    if (!usuario) {
+      res.status(401).send({ error: "Credenciales invalidas" });
+      return;
+    }
+
+    // Validar password
+    const passwordCorrecto = await bcrypt.compare(
+      password,
+      usuario.password_hash,
+    );
+
+    if (!passwordCorrecto) {
+      res.status(401).send({ error: "Credenciales invalidas" });
+      return;
+    }
+
+    // Crear token de acceso
+    const token = app.jwt.sign({
+      id: usuario.id,
+      rol: usuario.rol,
+    });
+
+    res.status(200).send({ token });
+    return;
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ error: "Error al iniciar sesion" });
+    return;
+  }
+});
+
 // Ruta GET /auth/me - Devolver datos del usuario logueado - Protegida
+app.get("/auth/me", { onRequest: [app.authenticate] }, async (req, res) => {
+  try {
+    const [usuario] =
+      await sql`SELECT id, email, rol FROM usuarios WHERE id = ${req.user.id}`;
+    res.status(200).send(usuario);
+    return;
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ error: "Error al obtener el usuario" });
+  }
+});
 
 app.listen({ port: 3000 }, (err, address) => {
   console.log(`Server is now listening on ${address}`);
