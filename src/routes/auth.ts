@@ -3,6 +3,10 @@ import type { FastifyInstance } from "fastify";
 import { sql } from "../db.ts";
 import { signUpSchema, loginSchema } from "../schemas/auth.ts";
 import bcrypt from "bcryptjs";
+import { cacheGet, cacheSet } from "../redis.ts";
+
+// TTL corto: /auth/me devuelve el rol, no queremos servirlo desactualizado
+const ME_TTL = 60;
 
 export default fp(async function auth(fastify: FastifyInstance) {
   // Ruta POST /auth/registro - Crear usuario (hashear password) - No protegida
@@ -10,7 +14,7 @@ export default fp(async function auth(fastify: FastifyInstance) {
     const { email, password } = req.body as { email: string; password: string };
 
     try {
-      await signUpSchema.parseAsync(req.body);
+      signUpSchema.parse(req.body);
     } catch (err) {
       console.error(err);
       res.status(400).send({ error: "Datos invalidos" });
@@ -93,9 +97,19 @@ export default fp(async function auth(fastify: FastifyInstance) {
     "/auth/me",
     { onRequest: [fastify.authenticate] },
     async (req, res) => {
+      const cachedKey = `auth:me:${req.user.id}`;
+      const cached = await cacheGet(cachedKey);
+      if (cached !== null) {
+        return res.status(200).send(cached);
+      }
       try {
         const [usuario] =
           await sql`SELECT id, email, rol FROM usuarios WHERE id = ${req.user.id}`;
+        if (!usuario) {
+          res.status(404).send({ error: "Usuario no encontrado" });
+          return;
+        }
+        await cacheSet(cachedKey, usuario, ME_TTL);
         res.status(200).send(usuario);
         return;
       } catch (err) {

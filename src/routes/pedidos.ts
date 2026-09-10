@@ -6,6 +6,7 @@ import {
   actualizarEstadoPedidoSchema,
 } from "../schemas/pedido.ts";
 import { validarId } from "../schemas/common.ts";
+import { cacheGet, cacheSet, cacheDel } from "../redis.ts";
 
 const transicionesValidas: Record<string, string[]> = {
   pendiente: ["confirmado", "cancelado"],
@@ -15,10 +16,6 @@ const transicionesValidas: Record<string, string[]> = {
 };
 
 export default fp(async function pedidos(fastify: FastifyInstance) {
-  // POST /pedidos — en progreso: falta envolver en transacción
-  // (sql.begin) para que la inserción de pedido + items + descuento
-  // de stock sea todo o nada.
-
   // Ruta POST protegida (requiere token)
   fastify.post(
     "/pedidos",
@@ -127,20 +124,27 @@ export default fp(async function pedidos(fastify: FastifyInstance) {
         return;
       }
 
+      // El listado de pedidos del cliente quedo desactualizado
+      await cacheDel(`clientes:${cliente_id}:pedidos`);
       res.status(201).send(pedidoNuevo);
     },
   );
 
   // Ruta GET /pedidos/:id
   fastify.get("/pedidos/:id", async (req, res) => {
-    const { id } = req.params as { id: string };
-
+    let id: number;
     try {
-      await validarId.parseAsync({ id });
+      id = validarId.parse(req.params).id;
     } catch (err) {
       console.error(err);
       res.status(400).send({ error: "Datos invalidos" });
       return;
+    }
+
+    const cachedKey = `pedidos:${id}`;
+    const cached = await cacheGet(cachedKey);
+    if (cached !== null) {
+      return res.status(200).send(cached);
     }
 
     try {
@@ -159,6 +163,7 @@ export default fp(async function pedidos(fastify: FastifyInstance) {
             JOIN productos p ON p.id = pi.producto_id
             WHERE pi.pedido_id = ${id}
           `;
+      await cacheSet(cachedKey, { ...pedido, items: items });
       res.status(200).send({ ...pedido, items: items });
     } catch (err) {
       console.error(err);
@@ -167,19 +172,17 @@ export default fp(async function pedidos(fastify: FastifyInstance) {
     }
   });
 
-  // Ruta PATCH a /pedidos/:id/estado para cambiar el estado de un pedido, codigo 200/400/404
-
   // Ruta PATCH protegida (requiere token)
   fastify.patch(
     "/pedidos/:id/estado",
     { onRequest: [fastify.authenticate] },
     async (req, res) => {
-      const { id } = req.params as { id: string };
       const { estado } = req.body as { estado: string };
 
+      let id: number;
       try {
-        await validarId.parseAsync(req.params);
-        await actualizarEstadoPedidoSchema.parseAsync(req.body);
+        id = validarId.parse(req.params).id;
+        actualizarEstadoPedidoSchema.parse(req.body);
       } catch (err) {
         console.error(err);
         res.status(400).send({ error: "Datos invalidos" });
@@ -214,6 +217,11 @@ export default fp(async function pedidos(fastify: FastifyInstance) {
         UPDATE pedidos SET estado = ${estado} WHERE id = ${id}
         RETURNING id, estado, created_at
       `;
+        // El detalle del pedido y el listado del cliente quedaron desactualizados
+        await cacheDel(
+          `pedidos:${id}`,
+          `clientes:${pedido.cliente_id}:pedidos`,
+        );
         res.status(200).send(pedidoActualizado);
       } catch (err) {
         console.error(err);

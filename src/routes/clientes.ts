@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { sql } from "../db.ts";
 import { crearClienteSchema } from "../schemas/cliente.ts";
 import { validarId } from "../schemas/common.ts";
+import { cacheGet, cacheSet, cacheDel } from "../redis.ts";
 
 export default fp(async function clientes(fastify: FastifyInstance) {
   // Ruta POST protegida (requiere token)
@@ -11,7 +12,7 @@ export default fp(async function clientes(fastify: FastifyInstance) {
     { onRequest: [fastify.authenticate] },
     async (req, res) => {
       try {
-        await crearClienteSchema.parseAsync(req.body);
+        crearClienteSchema.parse(req.body);
       } catch (err) {
         console.error(err);
         res.status(400).send({ error: "Datos invalidos" });
@@ -30,6 +31,8 @@ export default fp(async function clientes(fastify: FastifyInstance) {
           VALUES (${nombre}, ${email}, ${telefono})
           RETURNING *
         `;
+        // El listado quedo desactualizado
+        await cacheDel("clientes");
         res.status(201).send(clienteInsertado);
       } catch (err: any) {
         console.error(err);
@@ -43,10 +46,16 @@ export default fp(async function clientes(fastify: FastifyInstance) {
   );
 
   fastify.get("/clientes", async (req, res) => {
+    const cachedKey = `clientes`;
+    const cached = await cacheGet(cachedKey);
+    if (cached !== null) {
+      return res.status(200).send(cached);
+    }
     try {
       const clientes = await sql`
         SELECT *
         FROM clientes`;
+      await cacheSet(cachedKey, clientes);
       res.status(200).send(clientes);
     } catch (err) {
       console.error(err);
@@ -55,14 +64,19 @@ export default fp(async function clientes(fastify: FastifyInstance) {
   });
 
   fastify.get("/clientes/:id", async (req, res) => {
-    const { id } = req.params as { id: string };
-
+    let id: number;
     try {
-      await validarId.parseAsync({ id });
+      id = validarId.parse(req.params).id;
     } catch (err) {
       console.error(err);
       res.status(400).send({ error: "Datos invalidos" });
       return;
+    }
+
+    const cachedKey = `clientes:${id}`;
+    const cached = await cacheGet(cachedKey);
+    if (cached !== null) {
+      return res.status(200).send(cached);
     }
 
     try {
@@ -74,6 +88,7 @@ export default fp(async function clientes(fastify: FastifyInstance) {
         res.status(404).send({ error: "Cliente no encontrado" });
         return;
       }
+      await cacheSet(cachedKey, cliente[0]);
       res.status(200).send(cliente[0]);
     } catch (err) {
       console.error(err);
@@ -83,14 +98,19 @@ export default fp(async function clientes(fastify: FastifyInstance) {
 
   // Ruta GET a /clientes/:id/pedidos, listar pedidos de un cliente CODIGO 200 / 404
   fastify.get("/clientes/:id/pedidos", async (req, res) => {
-    const { id } = req.params as { id: string };
-
+    let id: number;
     try {
-      await validarId.parseAsync(req.params);
+      id = validarId.parse(req.params).id;
     } catch (err) {
       console.error(err);
       res.status(400).send({ error: "Datos invalidos" });
       return;
+    }
+
+    const cachedKey = `clientes:${id}:pedidos`;
+    const cached = await cacheGet(cachedKey);
+    if (cached !== null) {
+      return res.status(200).send(cached);
     }
 
     try {
@@ -102,6 +122,7 @@ export default fp(async function clientes(fastify: FastifyInstance) {
       try {
         const pedidos =
           await sql`SELECT id, estado FROM pedidos WHERE cliente_id = ${id};`;
+        await cacheSet(cachedKey, pedidos);
         res.status(200).send(pedidos);
       } catch (err) {
         console.error(err);

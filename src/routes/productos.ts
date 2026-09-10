@@ -6,13 +6,29 @@ import {
   actualizarProductoSchema,
 } from "../schemas/producto.ts";
 import { validarId } from "../schemas/common.ts";
+import Redis from "ioredis";
+import { DEF_TTL } from "../server.ts";
+
+// Cliente redis
+const redis = new Redis();
+
+redis.on("error", (err) => {
+  console.error("[ioredis] Error de conexión:", err.message);
+});
 
 export default fp(async function productos(fastify: FastifyInstance) {
   fastify.get("/productos", async (req, res) => {
+    const cachedKey = "productos";
+    const cachedData = await redis.get(cachedKey);
+    if (cachedData !== null) {
+      return res.status(200).send(JSON.parse(cachedData));
+    }
+
     try {
       const productos = await sql`
         SELECT *
         FROM productos`;
+      redis.setex(cachedKey, DEF_TTL, JSON.stringify(productos));
       res.status(200).send(productos);
     } catch (err) {
       console.error(err);
@@ -24,11 +40,17 @@ export default fp(async function productos(fastify: FastifyInstance) {
     const { id } = req.params as { id: string };
 
     try {
-      await validarId.parseAsync({ id });
+      validarId.parse({ id });
     } catch (err) {
       console.error(err);
       res.status(400).send({ error: "Datos invalidos" });
       return;
+    }
+
+    const cachedKey = `productos:${id}`;
+    const cachedData = await redis.get(cachedKey);
+    if (cachedData !== null) {
+      return res.status(200).send(JSON.parse(cachedData));
     }
 
     try {
@@ -40,6 +62,7 @@ export default fp(async function productos(fastify: FastifyInstance) {
         res.status(404).send({ error: "Producto no encontrado" });
         return;
       }
+      redis.setex(cachedKey, DEF_TTL, JSON.stringify(producto[0]));
       res.status(200).send(producto[0]);
     } catch (err) {
       console.error(err);
@@ -88,11 +111,17 @@ export default fp(async function productos(fastify: FastifyInstance) {
       const { id } = req.params as { id: string };
 
       try {
-        await validarId.parseAsync({ id });
+        validarId.parse({ id });
       } catch (err) {
         console.error(err);
         res.status(400).send({ error: "Datos invalidos" });
         return;
+      }
+
+      const cachedKey = `productos:${id}`;
+      const cachedData = await redis.get(cachedKey);
+      if (cachedData !== null) {
+        await redis.del(cachedKey);
       }
 
       try {
@@ -119,7 +148,7 @@ export default fp(async function productos(fastify: FastifyInstance) {
       const { id } = req.params as { id: string };
 
       try {
-        await validarId.parseAsync({ id });
+        validarId.parse({ id });
       } catch (err) {
         console.error(err);
         res.status(400).send({ error: "Datos invalidos" });
@@ -127,7 +156,7 @@ export default fp(async function productos(fastify: FastifyInstance) {
       }
 
       try {
-        await actualizarProductoSchema.parseAsync(req.body);
+        actualizarProductoSchema.parse(req.body);
       } catch (err) {
         console.error(err);
         res.status(400).send({ error: "Datos invalidos" });
